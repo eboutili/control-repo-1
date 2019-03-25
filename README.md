@@ -1,119 +1,136 @@
-# A Puppet Control Repository
+puppet-splunk_hec
+==============
 
-* [What You Get From This control\-repo](#what-you-get-from-this-control-repo)
-* [Copy This Repo Into Your Own Git Server](#copy-this-repo-into-your-own-git-server)
-  * [GitLab](#gitlab)
-  * [Bitbucket/Stash](#bitbucketstash)
-  * [Github](#github)
-* [Code Manager Setup](#code-manager-setup)
+Description
+-----------
+
+This is a report processor designed to send a report summary of useful information to the [Splunk HTTP Endpoint Collector "HEC"](http://docs.splunk.com/Documentation/Splunk/latest/Data/UsetheHTTPEventCollector) service. These summaries are designed to be informative but also not too verbose to make logging a burden to the enderuser. The summaries are meant to be small but sufficient to determine if a puppet run was successful on a node, and to include metadata such as code-id,  transaction-id, and other details to allow for more detailed actions to be done.
+
+It is best used the Splunk Addon [Puppet Report Viewer](https://splunkbase.splunk.com/app/4413/) which adds sourcetypes to make ingesting this data easier into Splunk (sourcetypes can be associated with specifc HEC tokens to make event viewing/processing easier). The Report Viewer also adds an actionable alert for Puppet Enterprise Users: using the data from a `puppet:summary` event, the Detailed Report Builder actionable alert will create a new event with the type of `puppet:detailed` containing information such as the node in questions facts, the resource_events from the node, and links to relavant reports in the Puppet Enterprise Console.
+
+There are also two tasks included in this module, `splunk_hec:bolt_apply` and `splunk_hec:bolt_result` designed to provide similar data formats to allow for Bolt Plans to be written that submit data to Splunk. Also included are plans showing example useage of the tasks.
 
 
-## What You Get From This control-repo
+Requirements
+------------
 
-This is a template [control repository](https://puppet.com/docs/pe/latest/code_management/control_repo.html) that has the minimum amount of scaffolding to make it easy to get started with [r10k](https://puppet.com/docs/pe/latest/code_management/r10k.html) or Puppet Enterprise's [Code Manager](https://puppet.com/docs/pe/latest/code_management/code_mgr.html).
+* Puppet or Puppet Enterprise
+* Splunk
 
-The important files and items in this template are as follows:
+This was tested on both Puppet Enterprise 2018.1.4 & Puppet 6, using stock gems of yaml, json, net::https
 
-* Basic example of roles and profiles.
-* An example Puppetfile with various module references.
-* An example Hiera configuration file and data directory with pre-created common.yaml and nodes directory.
-  * These match the default hierarchy that ships with PE.
-* An [environment.conf](https://puppet.com/docs/puppet/5.3/config_file_environment.html) that correctly implements:
-  * A site-modules directory for roles, profiles, and any custom modules for your organization.
-  * A config\_version script.
-* An example [config\_version](https://puppet.com/docs/puppet/5.3/config_file_environment.html#configversion) script that outputs the git commit ID of the code that was used during a Puppet run.
+Report Processor Installation & Usage
+--------------------
 
-Here's a visual representation of the structure of this repository:
+The steps below will help one install and troubleshoot the report processor on a single Puppet Master, including manual steps to configure a puppet-server, and to use the included splunk_hec class.
+
+1. Install the Puppet Report Viewer Addon in Splunk. This will import the needed sourcetypes that make setting up the HEC easier in the next steps, and also some overview dashboards that make it a lot easier to see if you're getting reports into Splunk.
+
+2. Create a Splunk HEC Token (preferably named `puppet:summary` and using the sourcetype `puppet:summary` from the Report Viewer addon). Follow the steps provided by Splunk's [Getting Data In Guide](http://docs.splunk.com/Documentation/Splunk/latest/Data/UsetheHTTPEventCollector) if you are new to HTTP Endpoint Collectors.
+
+3. Install this module in the environment your Puppet Server's are using (probably `production`)
+
+4. Run `puppet plugin download` on your Puppet Master to sync the new 
+
+(Step 5 and 6 are for testing/troubleshooting your configuration settings. Otherwise you can skip to step 7)
+
+5. Create a `/etc/puppetlabs/puppet/splunk_hec.yaml` (see examples directory for one) adding your Splunk Server & Token from step 1
+  - You can add 'timeout' as an optional parameter, default value is 2 for both open and read sessions, so take value x2 for real world use
+  - The same is true for port, defaults to 8088 if none provided
+  - Provide a 'puppetdb\_callback\_hostname' variable if the hostname that Splunk will use to lookup further information about a report is different than the puppetserver processing the reports (ie, multiple servers, load balancer, external dns name vs internal, etc.) Defaults to the certname of the puppetserver processing the report. This feature is yet to be enabled in the Puppet Report Viewer.
+
+  ```
+---
+"server" : "splunk-dev.testing.internal"
+"token" : "13311780-EC29-4DD0-A796-9F0CDC56F2AD"
+```
+
+6. Run `puppet apply -e 'notify { "hello world": }' --reports=splunk_hec` from the puppet server, this will load the report processor and test your configuration settings without actually modifying your puppet servers running configuration. If you are using the Puppet Report Viewer app in Splunk, you will see the page update with new data. If not, you will want to perform a search by the sourcetype you provided with your HEC configuration.
+
+7. Provide the working parameters / values to the splunk_hec class and use it in a profile or add it to the PE Masters subgroup of PE Infrastructure in the classification section of the console. Run puppet on the MoM first (because it is the Puppet Server all the other compile masters are using) before running puppet on the other compile masters. This will restart the puppet-server processor, so stagger the runs to prevent an outage.
+
+### Manual steps:
+
+- Add `splunk_hec` to `/etc/puppetlabs/puppet/puppet.conf` reports line under the master's configuration block
+```
+[master]
+node_terminus = classifier
+storeconfigs = true
+storeconfigs_backend = puppetdb
+reports = puppetdb,splunk_hec
+```
+
+- Restart the puppet server process for it to reload the configuration and the plugin
+
+- Run `puppet agent -t` somewhere, if you are using the suggested name, use `source="http:puppet-report-summary"` in your splunk search field to show the reports as they arrive
+
+
+SSL Support
+-----------
+Configuring SSL support for this report processor and tasks requires that the Splunk HEC service being used has a [properly configured SSL certificate](https://docs.splunk.com/Documentation/Splunk/latest/Security/AboutsecuringyourSplunkconfigurationwithSSL). Once the HEC service has a valid SSL certificate, the CA will need to be made available to the report processor to load. One could add the CA to Puppet's trust, or just make the CA file available on the puppet-server (/etc/puppetlabs/puppet/splunk\_hec/splunk\_ca.cert works). Either option is supported.
+
+One can update the splunk_hec.yaml file with the below settings
+
 
 ```
-control-repo/
-├── data/                                 # Hiera data directory.
-│   ├── nodes/                            # Node-specific data goes here.
-│   └── common.yaml                       # Common data goes here.
-├── manifests/
-│   └── site.pp                           # The "main" manifest that contains a default node definition.
-├── scripts/
-│   ├── code_manager_config_version.rb    # A config_version script for Code Manager.
-│   ├── config_version.rb                 # A config_version script for r10k.
-│   └── config_version.sh                 # A wrapper that chooses the appropriate config_version script.
-├── site-modules/                         # This directory contains site-specific modules and is added to $modulepath.
-│   ├── profile/                          # The profile module.
-│   └── role/                             # The role module.
-├── LICENSE
-├── Puppetfile                            # A list of external Puppet modules to deploy with an environment.
-├── README.md
-├── environment.conf                      # Environment-specific settings. Configures the modulepath and config_version.
-└── hiera.yaml                            # Hiera's configuration file. The Hiera hierarchy is defined here.
+"ssl_verify" : "true"
+"ssl_certificate" : "/etc/puppetlabs/puppet/splunk_hec/splunk_ca.cert"
 ```
 
-## Copy This Repo Into Your Own Git Server
+Or create a profile that copies the splunk_ca.cert as part of invoking the splunk_hec class.
 
-To get started with using the control-repo template in your own environment and git server, we've provided steps for the three most common servers we see: [GitLab](#gitlab), [BitBucket](#bitbucketstash), and [GitHub](#github).
+```
+class profile::splunk_hec {
+  file { '/etc/puppetlabs/puppet/splunk_hec':
+    ensure => directory,
+    owner  => 'pe-puppet',
+    group  => 'pe-puppet',
+    mode   => 0644,
+  }
+  file { '/etc/puppetlabs/puppet/splunk_hec/splunk_ca.cert':
+    ensure => file,
+    owner  => 'pe-puppet',
+    group  => 'pe-puppet',
+    mode   => '0644',
+    source => 'puppet:///modules/profile/splunk_hec/splunk_ca.cert',
+  }
+}
+```
 
-### GitLab
+Tasks
+-----
 
-1. Install GitLab.
-    * <https://about.gitlab.com/downloads/>
-1. After GitLab is installed you may sign in with the `root` user and password `5iveL!fe`.
-1. Make a user for yourself.
-1. Make an SSH key to link with your user. You’ll want to do this on the machine you intend to edit code from (most likely not your Puppet master, but your local workstation or laptop).
-    * <http://doc.gitlab.com/ce/ssh/README.html>
-    * <https://help.github.com/articles/generating-ssh-keys/>
-1. Create a group called `puppet` (this is case sensitive).
-    * <http://doc.gitlab.com/ce/workflow/groups.html>
-1. Add your user to the `puppet` group as well.
-1. Create a project called `control-repo`, and set the Namespace to be the `puppet` group.
-1. Clone this control repository to your laptop/workstation:
-    * `git clone <repository url>`
-    * `cd control-repo`
-1. Remove this repository as the origin remote:
-    * `git remote remove origin`
-1. Add your internal repository as the origin remote:
-    * `git remote add origin <url of your gitlab repository>`
-1. Push the production branch of the repository from your machine up to your git server
-    * `git push origin production`
+Two tasks are provided for submitting data from a Bolt plan to Splunk. It is suggested to use a different HEC token to distinguish between events from Puppet runs and those generated by Bolt. The Puppet Report Viewer addon includes a puppet:bolt sourcetype to faciltate this. Currently SSL validation for bolt communications to Splunk is not supported.
 
-### Bitbucket/Stash
+`splunk_hec::bolt_apply`: A task that uses the remote task option of Bolt to submit a Bolt Apply report in a similar format to the puppet:summary. Unlike the summary, this includes the facts from a target because those are available to bolt at execution time and added to the report data before submission to Splunk.
 
-1. Install Bitbucket
-    * <https://www.atlassian.com/software/bitbucket/download>
-1. Make a `Project` called `puppet` (with a short name of `PUP`)
-1. Create a repository called `control-repo`
-1. Create a user called `r10k` with a password of `puppet`.
-    * Make the r10k user an admin of the `PUP` project.
-1. Either use the admin user to test pushing code, or create a user for yourself and add your SSH key to that user.
-    * If making a user for yourself, give your user account read/write or admin privilege to the `PUP` project.
-1. Clone this control repository to your laptop/workstation
-    * `git clone <repository url>`
-    * `cd control-repo`
-1. Remove this repository as the origin remote
-    * `git remote remove origin`
-1. Add your internal repository as the origin remote
-    * `git remote add origin <url of your bitbucket repository>`
-1. Push the production branch of the repository from your machine up to your git server
-    * `git push origin production`
+`splunk_hec::bolt_result`: A task that sends the result of a function to Splunk. Since the format is freeform and dependent on the individual function/tasks being called, formatting of the data is best done in the plan itself prior to submitting the result hash to the task. 
 
-### GitHub
+To setup, one needs to add the splunk_hec endpoint as a remote target in the inventory.yml:
 
-1. Prepare your local git client to authenticate with GitHub.com or a local GitHub Enterprise instance.
-    * <https://help.github.com/articles/generating-ssh-keys/>
-    * <https://help.github.com/articles/adding-a-new-ssh-key-to-your-github-account/>
-1. Create a repository called `control-repo` in your user account or organization. Ensure that "Initialize this repository with a README" is not selected.
-    * <https://help.github.com/articles/creating-a-new-repository/>
-1. Make a note of your repository URL (HTTPS or SSH, depending on your security configuration).
-1. Clone this control repository to your laptop/workstation:
-    * `git clone <repository url>`
-    * `cd control-repo`
-1. Remove this repository as the origin remote:
-    * `git remote remove origin`
-1. Add your internal repository as the origin remote:
-    * `git remote add origin <url of your github repository>`
-1. Push the production branch of the repository from your machine up to your git server
-    * `git push origin production`
+```
+---
+nodes:
+  - name: splunk_bolt_hec
+    config:
+      transport: remote
+      remote:
+        hostname: <hostname>
+        token: <token>
+        port: 8088
+```
 
-## Code Manager Setup
+See the plans/ directory for working examples of apply and result usage.
 
-If you use Puppet Enterprise and have not yet enabled and configured Code Manager, in addition to reading the official [documentation](https://puppet.com/docs/pe/latest/code_management/code_mgr.html) for enabling it, you may want to look at the Ramp-Up Program's control repository instead of this one. It's similar to this repo except that it has batteries included, so to speak. There are pre-built profiles for configuring Code Manager, generating SSH keys, and setting up your Git server to work with Code Manager.
 
-* <https://github.com/Puppet-RampUpProgram/control-repo>
 
+
+Known Issues
+------------
+* SSL Validation is under active development and behavior may change
+* Automated testing could use work
+
+
+Author
+------
+Chris Barker <cbarker@puppet.com>
