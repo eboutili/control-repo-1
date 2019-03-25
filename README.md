@@ -4,4 +4,4 @@ splunk_hec-control-repo
 Description
 -----------
 
-This is a Puppet control-repo to use for splunk_hec report processor demos.
+This is work-in-progress Puppet control-repo to use in Puppet/Splunk integration demos environments
